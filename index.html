@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>MiniFeed 后端测试页面（含点赞）</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; }
+    h2 { margin-bottom: 10px; }
+    h3 { margin-top: 24px; margin-bottom: 8px; }
+    input, textarea { padding: 6px; margin: 4px 8px 4px 0; width: 280px; }
+    textarea { width: 400px; height: 60px; }
+    button { padding: 6px 16px; margin: 4px 0; cursor: pointer; }
+    pre { padding: 10px; background: #f3f3f3; border-radius: 4px; min-height: 80px; white-space: pre-wrap; word-break: break-all; }
+    hr { margin: 24px 0; }
+    #posts_container div { margin: 6px 0; padding: 6px; border-bottom: 1px solid #ddd; }
+    .small { font-size: 12px; color: #666; }
+  </style>
+</head>
+
+<body>
+  <h2>MiniFeed 后端测试页面（含点赞功能）</h2>
+
+  <!-- Token 存放 -->
+  <h3>Token</h3>
+  <input id="token" placeholder="登录后自动填入 Token" />
+
+  <hr />
+
+  <!-- 注册 -->
+  <h3>注册用户 /user/register</h3>
+  <input id="reg_username" placeholder="用户名" />
+  <input id="reg_password" placeholder="密码" type="password" />
+  <button onclick="register()">注册</button>
+
+  <hr />
+
+  <!-- 登录 -->
+  <h3>登录用户 /user/login</h3>
+  <input id="login_username" placeholder="用户名" />
+  <input id="login_password" placeholder="密码" type="password" />
+  <button onclick="login()">登录</button>
+
+  <hr />
+
+  <!-- 发动态 -->
+  <h3>发布动态 /api/post</h3>
+  <textarea id="post_content" placeholder="说点什么..."></textarea><br />
+  <input id="post_image" placeholder="图片 URL（可空）" />
+  <button onclick="createPost()">发布动态</button>
+
+  <hr />
+
+  <!-- 公共动态列表 + 点赞 -->
+  <h3>公共动态列表 /posts</h3>
+  <input id="posts_cursor" placeholder="cursor（可空）" />
+  <button onclick="loadPosts()">加载 /posts</button>
+  <div id="posts_container"></div>
+
+  <hr />
+
+  <!-- 手动点赞测试 -->
+  <h3>点赞 / 取消点赞 /api/post/:id/like</h3>
+  <input id="like_post_id" placeholder="post_id，例如：1" />
+  <button onclick="likePostById()">点赞 / 取消点赞</button>
+
+  <hr />
+
+  <!-- 关注相关 -->
+  <h3>通过用户 ID 关注 /api/follow/:id</h3>
+  <input id="follow_id" placeholder="要关注的用户 ID，例如：2" />
+  <button onclick="followUser()">关注</button>
+
+  <h3>通过用户 ID 取关 /api/unfollow/:id</h3>
+  <input id="unfollow_id" placeholder="要取关的用户 ID，例如：2" />
+  <button onclick="unfollowUser()">取关</button>
+
+  <h3>我的关注列表 /api/following</h3>
+  <button onclick="getFollowing()">查询关注列表</button>
+
+  <hr />
+
+  <!-- 拉模式 Feed -->
+  <h3>拉模式 Feed /api/feed/pull</h3>
+  <input id="feed_cursor" placeholder="cursor（可空）" />
+  <button onclick="getFeed()">获取 Feed</button>
+
+  <hr />
+
+  <!-- 输出结果 -->
+  <h3>返回结果（最后一个请求的原始 JSON）</h3>
+  <pre id="output"></pre>
+
+<script>
+const BASE = "http://localhost:8888";
+
+// 显示响应
+function show(res) {
+  document.getElementById("output").textContent =
+    JSON.stringify(res, null, 2);
+}
+
+// 通用：获取当前 token
+function getToken() {
+  return document.getElementById("token").value.trim();
+}
+
+// 注册
+async function register() {
+  try {
+    const body = {
+      username: document.getElementById("reg_username").value.trim(),
+      password: document.getElementById("reg_password").value,
+    };
+    const res = await fetch(BASE + "/user/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    show(data);
+  } catch (e) {
+    show({ error: e.toString() });
+  }
+}
+
+// 登录
+async function login() {
+  try {
+    const body = {
+      username: document.getElementById("login_username").value.trim(),
+      password: document.getElementById("login_password").value,
+    };
+    const res = await fetch(BASE + "/user/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    show(data);
+
+    // 自动写入 token（后端返回的 data.token）
+    if (data.data && data.data.token) {
+      document.getElementById("token").value = data.data.token;
+    }
+  } catch (e) {
+    show({ error: e.toString() });
+  }
+}
+
+// 通用：带 token 的 GET
+async function authedGet(url) {
+  try {
+    const token = getToken();
+    const res = await fetch(BASE + url, {
+      headers: {
+        "Authorization": "Bearer " + token,
+      },
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
+
+// 通用：带 token 的 POST（JSON body）
+async function authedPost(url, bodyObj) {
+  try {
+    const token = getToken();
+    const res = await fetch(BASE + url, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bodyObj || {}),
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
+
+// 发布动态
+async function createPost() {
+  const content = document.getElementById("post_content").value.trim();
+  const imageUrl = document.getElementById("post_image").value.trim();
+
+  if (!content) {
+    show({ error: "内容不能为空" });
+    return;
+  }
+
+  const data = await authedPost("/api/post", {
+    content: content,
+    image_url: imageUrl,
+  });
+  show(data);
+}
+
+// 加载公共动态列表 /posts
+async function loadPosts() {
+  const cursor = document.getElementById("posts_cursor").value.trim();
+  let url = "/posts?limit=10";
+  if (cursor) {
+    url += "&cursor=" + encodeURIComponent(cursor);
+  }
+
+  try {
+    const res = await fetch(BASE + url);
+    const data = await res.json();
+    show(data);
+
+    const list = data.data && data.data.list ? data.data.list : data.list || [];
+    renderPosts(list);
+
+    // 自动把 next_cursor 填到输入框，方便翻页
+    const nextCursor = data.data && data.data.next_cursor !== undefined
+      ? data.data.next_cursor
+      : data.next_cursor;
+    if (nextCursor) {
+      document.getElementById("posts_cursor").value = nextCursor;
+    }
+  } catch (e) {
+    show({ error: e.toString() });
+  }
+}
+
+// 渲染 posts，并在每条帖子下面加“点赞按钮”
+function renderPosts(posts) {
+  const container = document.getElementById("posts_container");
+  container.innerHTML = "";
+
+  if (!posts || posts.length === 0) {
+    container.textContent = "暂无动态";
+    return;
+  }
+
+  posts.forEach(p => {
+    const div = document.createElement("div");
+
+    const title = document.createElement("div");
+    title.textContent = `Post #${p.id}  用户: ${p.user_id}`;
+    div.appendChild(title);
+
+    const content = document.createElement("div");
+    content.textContent = p.content || "";
+    div.appendChild(content);
+
+    if (p.image_url) {
+      const img = document.createElement("div");
+      img.className = "small";
+      img.textContent = "图片: " + p.image_url;
+      div.appendChild(img);
+    }
+
+    const likeInfo = document.createElement("div");
+    likeInfo.className = "small";
+    likeInfo.textContent = "当前点赞数: " + (p.like_count || 0);
+    div.appendChild(likeInfo);
+
+    const btn = document.createElement("button");
+    btn.textContent = "点赞 / 取消点赞";
+    btn.onclick = async () => {
+      const data = await authedPost(`/api/post/${p.id}/like`, {});
+      show(data);
+      // 点完之后刷新公共列表，方便看到最新 like_count
+      loadPosts();
+    };
+    div.appendChild(btn);
+
+    container.appendChild(div);
+  });
+}
+
+// 手动通过 post_id 点赞
+async function likePostById() {
+  const id = document.getElementById("like_post_id").value.trim();
+  if (!id) {
+    show({ error: "post_id 不能为空" });
+    return;
+  }
+  const data = await authedPost(`/api/post/${id}/like`, {});
+  show(data);
+}
+
+// 查询关注列表
+async function getFollowing() {
+  const data = await authedGet("/api/following");
+  show(data);
+}
+
+// 拉模式 Feed
+async function getFeed() {
+  const cursor = document.getElementById("feed_cursor").value.trim();
+  let url = "/api/feed/pull?limit=10";
+  if (cursor) {
+    url += "&cursor=" + encodeURIComponent(cursor);
+  }
+  const data = await authedGet(url);
+  show(data);
+}
+
+// 通过 ID 关注
+async function followUser() {
+  const id = document.getElementById("follow_id").value.trim();
+  if (!id) {
+    show({ error: "请输入要关注的用户 ID" });
+    return;
+  }
+  const data = await authedPost(`/api/follow/${id}`, {});
+  show(data);
+}
+
+// 通过 ID 取关
+async function unfollowUser() {
+  const id = document.getElementById("unfollow_id").value.trim();
+  if (!id) {
+    show({ error: "请输入要取关的用户 ID" });
+    return;
+  }
+  const data = await authedPost(`/api/unfollow/${id}`, {});
+  show(data);
+}
+</script>
+
+</body>
+</html>
