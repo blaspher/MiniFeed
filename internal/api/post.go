@@ -10,11 +10,35 @@ import (
 	"minifeed/internal/model"
 
 	"github.com/gin-gonic/gin"
+	redis "github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-func syncLikeCountToDB(postID uint, count int, db *gorm.DB) {
-	_ = db.Model(&model.Post{}).Where("id = ?", postID).Update("like_count", count).Error
+// push the newly created post into each follower's index
+func pushPostInbox(post model.Post, db *gorm.DB) {
+	ctx := context.Background()
+	//query all followers
+	var rels []model.Follow
+	if err := db.Where("follow_id = ?", post.UserID).Find(&rels).Error; err != nil {
+		return
+	}
+	//collect all user IDs who should receive this post: all followers + the author himself
+	userIDs := make([]uint, 0, len(rels)+1)
+	userIDs = append(userIDs, post.UserID)
+	for _, r := range rels {
+		userIDs = append(userIDs, r.UserID)
+	}
+	//use post creation timestamp as score for sorting in the ZSet
+	score := float64(post.CreatedAt.Unix())
+	//push the post into each user's inbox in Redis
+	for _, uid := range userIDs {
+		key := fmt.Sprintf("inbox:%d", uid)
+		_ = config.Rdb.ZAdd(ctx, key, redis.Z{
+			Score:  score,
+			Member: post.ID,
+		}).Err()
+	}
+
 }
 
 func PostRoutes(r *gin.Engine, db *gorm.DB) {
@@ -52,6 +76,10 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				Fail(c, 5001, "db error")
 				return
 			}
+
+			//push post to followers' inboxes
+			go pushPostInbox(post, db)
+
 			OK(c, gin.H{
 				"post_id":    post.ID,
 				"user_ud":    post.UserID,
@@ -128,8 +156,6 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				Fail(c, 6010, "redis error")
 				return
 			}
-
-			go syncLikeCountToDB(postID, int(count), db)
 
 			OK(c, gin.H{
 				"post_id":    postID,
@@ -222,7 +248,7 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			ids = append(ids, r.FollowID)
 		}
 
-		//=========================query their posts from 'post' table(id DES + cursor-based pagination)=================
+		//query their posts from 'post' table(id DES + cursor-based pagination)
 		var posts []model.Post
 		query := db.Where("user_id IN ?", ids).Order("id DESC").Limit(limit)
 		if cursorStr != "" {
@@ -235,7 +261,7 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			return
 		}
 
-		//=========================== calculate next page cursor (the last id from current page)=============================
+		//calculate next page cursor (the last id from current page)
 		var nextCursor uint
 		if len(posts) > 0 {
 			nextCursor = posts[len(posts)-1].ID
@@ -243,6 +269,110 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 
 		OK(c, gin.H{
 			"list":        posts,
+			"next_cursor": nextCursor,
+		})
+
+	})
+
+	//============================== reaad feed data from the user's inbox in push mode =======================
+	authGroup.GET("/feed/push", func(c *gin.Context) {
+
+		//get current user ID from context
+		uidVal, ok := c.Get("user_id")
+		if !ok {
+			Fail(c, 3051, "no user in context")
+			return
+		}
+		userID, ok := uidVal.(uint)
+		if !ok {
+			Fail(c, 3052, "invalid user id")
+			return
+		}
+
+		//pagination parameters
+		limitStr := c.DefaultQuery("limit", "10")
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 || limit > 100 {
+			limit = 100
+		}
+		cursorStr := c.Query("cursor")
+
+		ctx := context.Background()
+		inboxKey := fmt.Sprintf("inbox:%d", userID)
+
+		//determine max score for ZSet range query
+		max := "+inf"
+		if cursorStr != "" {
+			max = "(" + cursorStr
+		}
+
+		//read one page of post_ids from Redis inbox (sorted by score descending)
+		zs, err := config.Rdb.ZRevRangeByScoreWithScores(ctx, inboxKey, &redis.ZRangeBy{
+			Max:    max,
+			Min:    "0",
+			Offset: 0,
+			Count:  int64(limit),
+		}).Result()
+		if err != nil {
+			Fail(c, 3053, "redis error")
+			return
+		}
+		if len(zs) == 0 {
+			OK(c, gin.H{
+				"list":        []model.Post{},
+				"next_cursor": "",
+			})
+			return
+		}
+
+		//extract post IDs and their scores (timestamps)
+		ids := make([]uint, 0, len(zs))
+		scores := make([]float64, 0, len(zs))
+		for _, z := range zs {
+			idStr := fmt.Sprint(z.Member)
+			id64, err := strconv.ParseUint(idStr, 10, 64)
+			if err != nil || id64 == 0 {
+				continue
+			}
+			ids = append(ids, uint(id64))
+			scores = append(scores, z.Score)
+		}
+		if len(ids) == 0 {
+			OK(c, gin.H{
+				"list":        []model.Post{},
+				"next_cursor": "",
+			})
+			return
+		}
+
+		//fetch post details from MySQL in bulk using IN query
+		var posts []model.Post
+		if err := db.Where("id IN ?", ids).Find(&posts).Error; err != nil {
+			Fail(c, 3054, "db error")
+			return
+		}
+
+		//Reorder posts according to Redis ZSet ordering
+		m := make(map[uint]model.Post, len(posts))
+		for _, p := range posts {
+			m[p.ID] = p
+		}
+		ordered := make([]model.Post, 0, len(ids))
+		for _, id := range ids {
+			if p, ok := m[id]; ok {
+				ordered = append(ordered, p)
+			}
+		}
+
+		//set next_cursor as the timestamp of last item in this page
+		nextCursor := ""
+		if len(scores) > 0 {
+			nextCursor = fmt.Sprintf("%.0f", scores[len(scores)-1])
+		}
+
+		//return feed list + next cursor
+		OK(c, gin.H{
+			"list":        ordered,
 			"next_cursor": nextCursor,
 		})
 
