@@ -33,11 +33,11 @@ func StartLikeSync(db *gorm.DB) {
 				}
 
 				if err := dao.UpdatePostLikeCount(db, postID, count); err != nil {
-					log.Printf("[corn] failed to update MySQL (post_id=%d): %v\n", postID, err)
+					log.Printf("[cron] failed to update MySQL (post_id=%d): %v\n", postID, err)
 					continue
 				}
 
-				log.Printf("[corn] synced post_id = %d, like_id = %d\n", postID, count)
+				log.Printf("[cron] synced post_id = %d, like_id = %d\n", postID, count)
 			}
 		}
 	}()
