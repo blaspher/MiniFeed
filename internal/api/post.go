@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"minifeed/internal/config"
+	"minifeed/internal/dao"
 	"minifeed/internal/middleware"
 	"minifeed/internal/model"
 
@@ -67,6 +68,9 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				Fail(c, 4003, "invalid user id")
 				return
 			}
+
+			dao.DelHotPostsCache()
+
 			post := model.Post{
 				UserID:   userID,
 				Content:  req.Content,
@@ -76,13 +80,15 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				Fail(c, 5001, "db error")
 				return
 			}
+			dao.AddPostToBloom(post.ID)
+			dao.DelHotPostsCacheAsync()
 
 			//push post to followers' inboxes
 			go pushPostInbox(post, db)
 
 			OK(c, gin.H{
 				"post_id":    post.ID,
-				"user_ud":    post.UserID,
+				"user_id":    post.UserID,
 				"content":    post.Content,
 				"image_url":  post.ImageURL,
 				"created_at": post.CreatedAt,
@@ -91,6 +97,7 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 
 		//like and unlike
 		authGroup.POST("/post/:id/like", func(c *gin.Context) {
+
 			//parse current user
 			uidVal, ok := c.Get("user_id")
 			if !ok {
@@ -102,6 +109,7 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				Fail(c, 6002, "invalid user id")
 				return
 			}
+
 			//parse post ID
 			postIDStr := c.Param("id")
 			postID64, err := strconv.ParseUint(postIDStr, 10, 64)
@@ -110,6 +118,12 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				return
 			}
 			postID := uint(postID64)
+
+			if !dao.PostMayExist(postID) {
+				Fail(c, 4003, "post not found")
+				return
+			}
+
 			//verify post existence
 			var post model.Post
 			if err := db.Select("id").Where("id = ?", postID).First(&post).Error; err != nil {
@@ -125,6 +139,9 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			likeSetKey := fmt.Sprintf("like:%d", postID)
 			likeCountKey := fmt.Sprintf("like_count:%d", postID)
 			userIDStr := fmt.Sprintf("%d", userID)
+
+			dao.DelHotPostsCache()
+
 			//check if user has liked the post
 			isMember, err := config.Rdb.SIsMember(ctx, likeSetKey, userIDStr).Result()
 			if err != nil {
@@ -150,12 +167,16 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			count, err := config.Rdb.SCard(ctx, likeSetKey).Result()
 			if err != nil {
 				Fail(c, 6009, "redis error")
+				return
 			}
+
 			//update like count cache for fast reads
 			if err := config.Rdb.Set(ctx, likeCountKey, count, 0).Err(); err != nil {
 				Fail(c, 6010, "redis error")
 				return
 			}
+
+			dao.DelHotPostsCacheAsync()
 
 			OK(c, gin.H{
 				"post_id":    postID,
@@ -374,6 +395,27 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 		OK(c, gin.H{
 			"list":        ordered,
 			"next_cursor": nextCursor,
+		})
+
+	})
+
+	//=================================== hot posts feed (by like_count, cached in Redis) ================================
+	authGroup.GET("/feed/hot", func(c *gin.Context) {
+
+		limitStr := c.DefaultQuery("limit", "10")
+		limit, err := strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 || limit > 50 {
+			limit = 10
+		}
+
+		posts, err := dao.GetHotPosts(db, limit)
+		if err != nil {
+			Fail(c, 5003, "db or cache error")
+			return
+		}
+
+		OK(c, gin.H{
+			"lists": posts,
 		})
 
 	})

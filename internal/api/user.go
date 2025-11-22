@@ -149,4 +149,14 @@ func UserRoutes(r *gin.Engine, db *gorm.DB) {
 			"list": users,
 		})
 	})
+
+	authGroup.GET("/me", func(c *gin.Context) {
+		userID, _ := c.Get("user_id")
+
+		c.JSON(200, gin.H{
+			"msg":     "Hello user",
+			"user_id": userID,
+		})
+	})
+
 }

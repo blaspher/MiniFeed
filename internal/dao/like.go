@@ -57,5 +57,14 @@ func ExtractPostID(key string) (uint, error) {
 
 // updates MySQL like_count
 func UpdatePostLikeCount(db *gorm.DB, postID uint, count uint) error {
-	return db.Model(&model.Post{}).Where("id = ?", postID).Update("like_count", count).Error
+	DelHotPostsCache()
+
+	err := db.Model(&model.Post{}).Where("id = ?", postID).Update("like_count", count).Error
+	if err != nil {
+		return err
+	}
+
+	DelHotPostsCacheAsync()
+
+	return nil
 }
