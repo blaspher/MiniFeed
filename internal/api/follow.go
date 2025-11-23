@@ -1,16 +1,16 @@
 package api
 
 import (
+	"errors"
 	"minifeed/internal/middleware"
-	"minifeed/internal/model"
+	"minifeed/internal/service"
 
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
-func FollowRoutes(r *gin.Engine, db *gorm.DB) {
+func FollowRoutes(r *gin.Engine, followSvc *service.FollowService) {
 	authGroup := r.Group("/api", middleware.Auth())
 
 	//=================== follow an user ===================
@@ -35,17 +35,11 @@ func FollowRoutes(r *gin.Engine, db *gorm.DB) {
 		}
 		targetID := uint(targetID64)
 
-		//self-following is not allowed
-		if targetID == userID {
-			Fail(c, 3004, "cannot follow yourself")
-			return
-		}
-
-		f := model.Follow{
-			UserID:   userID,
-			FollowID: targetID,
-		}
-		if err := db.FirstOrCreate(&f, "user_id = ? AND follow_id = ?", userID, targetID).Error; err != nil {
+		if err := followSvc.Follow(userID, targetID); err != nil {
+			if errors.Is(err, service.ErrFollowSelf) {
+				Fail(c, 3004, "cannot follow yourself")
+				return
+			}
 			Fail(c, 3005, "db error")
 			return
 		}
@@ -79,7 +73,7 @@ func FollowRoutes(r *gin.Engine, db *gorm.DB) {
 		}
 		targetID := uint(targetID64)
 
-		if err := db.Where("user_id = ? AND follow_id = ?", userID, targetID).Delete(&model.Follow{}).Error; err != nil {
+		if err := followSvc.UnFollow(userID, targetID); err != nil {
 			Fail(c, 3014, "db.Error")
 			return
 		}
@@ -105,24 +99,9 @@ func FollowRoutes(r *gin.Engine, db *gorm.DB) {
 			return
 		}
 
-		var rels []model.Follow
-		if err := db.Where("user_id = ?", userID).Find(&rels).Error; err != nil {
+		users, err := followSvc.ListFollowing(userID)
+		if err != nil {
 			Fail(c, 3023, "db error")
-			return
-		}
-		if len(rels) == 0 {
-			OK(c, gin.H{"list": []model.User{}})
-			return
-		}
-
-		ids := make([]uint, 0, len(rels))
-		for _, r := range rels {
-			ids = append(ids, r.FollowID)
-		}
-
-		var users []model.User
-		if err := db.Where("id IN ?", ids).Find(&users).Error; err != nil {
-			Fail(c, 3024, "db error")
 			return
 		}
 
@@ -145,25 +124,9 @@ func FollowRoutes(r *gin.Engine, db *gorm.DB) {
 			return
 		}
 
-		var rels []model.Follow
-		if err := db.Where("follow_id = ?", userID).Find(&rels).Error; err != nil {
+		users, err := followSvc.ListFollowers(userID)
+		if err != nil {
 			Fail(c, 3033, "db error")
-			return
-		}
-		if len(rels) == 0 {
-			OK(c, gin.H{"list": []model.User{}})
-			return
-		}
-
-		ids := make([]uint, 0, len(rels))
-		for _, r := range rels {
-			ids = append(ids, r.UserID)
-		}
-
-		var users []model.User
-		if err := db.Where("id IN ?", ids).Find(&users).Error; err != nil {
-			Fail(c, 3034, "db error")
-			return
 		}
 
 		OK(c, gin.H{

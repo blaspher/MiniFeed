@@ -1,15 +1,13 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 
 	"minifeed/internal/middleware"
-	"minifeed/internal/model"
-	jwtUtil "minifeed/pkg/jwt"
+	"minifeed/internal/service"
 )
 
 type Response struct {
@@ -33,7 +31,7 @@ func Fail(c *gin.Context, code int, msg string) {
 	})
 }
 
-func UserRoutes(r *gin.Engine, db *gorm.DB) {
+func UserRoutes(r *gin.Engine, userSvc *service.UserService) {
 
 	//==================== register ======================
 	r.POST("/user/register", func(c *gin.Context) {
@@ -50,31 +48,14 @@ func UserRoutes(r *gin.Engine, db *gorm.DB) {
 			Fail(c, 1002, "username or password is empty!")
 			return
 		}
-		//deplicated name check
-		var count int64
-		if err := db.Model(&model.User{}).Where("username = ?", req.Username).Count(&count).Error; err != nil {
-			Fail(c, 1003, "db error!")
-			return
-		}
-		if count > 0 {
-			Fail(c, 1004, "username already exists!")
-			return
-		}
 
-		//bcrypt encrypt password
-		hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		u, err := userSvc.Register(req.Username, req.Password)
 		if err != nil {
-			Fail(c, 1005, "encrypt password failed!")
-			return
-		}
-
-		//create user
-		u := model.User{
-			Username: req.Username,
-			Password: string(hashed),
-		}
-		if err := db.Create(&u).Error; err != nil {
-			Fail(c, 1006, "creat user failed!")
+			if errors.Is(err, service.ErrUserExists) {
+				Fail(c, 1004, "username alerady exists")
+				return
+			}
+			Fail(c, 1003, "db error")
 			return
 		}
 
@@ -99,26 +80,17 @@ func UserRoutes(r *gin.Engine, db *gorm.DB) {
 			return
 		}
 
-		//query user
-		var u model.User
-		if err := db.Where("username = ?", req.Username).First(&u).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				Fail(c, 2003, "user not found!")
+		u, token, err := userSvc.Login(req.Username, req.Password)
+		if err != nil {
+			if errors.Is(err, service.ErrUserNotFound) {
+				Fail(c, 2003, "user not found")
 				return
 			}
-			Fail(c, 2004, "db error!")
-			return
-		}
-
-		//check password
-		if err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.Password)); err != nil {
-			Fail(c, 2005, "wrong password!")
-			return
-		}
-
-		token, err := jwtUtil.GenerateToken(u.ID)
-		if err != nil {
-			Fail(c, 2006, "generate Token failed!")
+			if errors.Is(err, service.ErrWrongPassword) {
+				Fail(c, 2005, "wrong password")
+				return
+			}
+			Fail(c, 2004, "db error")
 			return
 		}
 
@@ -139,8 +111,9 @@ func UserRoutes(r *gin.Engine, db *gorm.DB) {
 			Fail(c, 4001, "keyword is empty")
 			return
 		}
-		var users []model.User
-		if err := db.Where("username LIKE ?", "%"+keyword+"%").Limit(20).Find(&users).Error; err != nil {
+
+		users, err := userSvc.SearchByUsername(keyword, 20)
+		if err != nil {
 			Fail(c, 4002, "db error")
 			return
 		}

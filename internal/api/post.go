@@ -1,22 +1,18 @@
 package api
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"strconv"
 
-	"minifeed/internal/config"
-	"minifeed/internal/dao"
 	"minifeed/internal/middleware"
-	"minifeed/internal/model"
+	"minifeed/internal/service"
 
 	"github.com/gin-gonic/gin"
-	redis "github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
 // push the newly created post into each follower's index
-func pushPostInbox(post model.Post, db *gorm.DB) {
+/*func pushPostInbox(post model.Post, db *gorm.DB) {
 	ctx := context.Background()
 	//query all followers
 	var rels []model.Follow
@@ -40,9 +36,9 @@ func pushPostInbox(post model.Post, db *gorm.DB) {
 		}).Err()
 	}
 
-}
+}*/
 
-func PostRoutes(r *gin.Engine, db *gorm.DB) {
+func PostRoutes(r *gin.Engine, svc *service.PostService) {
 	//=============privacy:post a status update, need to login================
 	authGroup := r.Group("/api", middleware.Auth())
 	{
@@ -69,22 +65,11 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 				return
 			}
 
-			dao.DelHotPostsCache()
-
-			post := model.Post{
-				UserID:   userID,
-				Content:  req.Content,
-				ImageURL: req.ImageURL,
-			}
-			if err := db.Create(&post).Error; err != nil {
+			post, err := svc.CreatePost(userID, req.Content, req.ImageURL)
+			if err != nil {
 				Fail(c, 5001, "db error")
 				return
 			}
-			dao.AddPostToBloom(post.ID)
-			dao.DelHotPostsCacheAsync()
-
-			//push post to followers' inboxes
-			go pushPostInbox(post, db)
 
 			OK(c, gin.H{
 				"post_id":    post.ID,
@@ -119,69 +104,20 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			}
 			postID := uint(postID64)
 
-			if !dao.PostMayExist(postID) {
-				Fail(c, 4003, "post not found")
-				return
-			}
-
-			//verify post existence
-			var post model.Post
-			if err := db.Select("id").Where("id = ?", postID).First(&post).Error; err != nil {
-				if err == gorm.ErrRecordNotFound {
+			liked, likeCount, err := svc.ToggleLike(userID, postID)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
 					Fail(c, 6004, "post not found")
 					return
 				}
-				Fail(c, 6005, "db error")
+				Fail(c, 6005, "internal error")
 				return
 			}
-
-			ctx := context.Background()
-			likeSetKey := fmt.Sprintf("like:%d", postID)
-			likeCountKey := fmt.Sprintf("like_count:%d", postID)
-			userIDStr := fmt.Sprintf("%d", userID)
-
-			dao.DelHotPostsCache()
-
-			//check if user has liked the post
-			isMember, err := config.Rdb.SIsMember(ctx, likeSetKey, userIDStr).Result()
-			if err != nil {
-				Fail(c, 6006, "redis Error")
-				return
-			}
-			var liked bool
-			if !isMember {
-				if err := config.Rdb.SAdd(ctx, likeSetKey, userIDStr).Err(); err != nil {
-					Fail(c, 6007, "redis error")
-					return
-				}
-				liked = true
-			} else {
-				if err := config.Rdb.SRem(ctx, likeSetKey, userIDStr).Err(); err != nil {
-					Fail(c, 6008, "redis error")
-					return
-				}
-				liked = false
-			}
-
-			//recalculate total like count from the Redis set(authoritative source)
-			count, err := config.Rdb.SCard(ctx, likeSetKey).Result()
-			if err != nil {
-				Fail(c, 6009, "redis error")
-				return
-			}
-
-			//update like count cache for fast reads
-			if err := config.Rdb.Set(ctx, likeCountKey, count, 0).Err(); err != nil {
-				Fail(c, 6010, "redis error")
-				return
-			}
-
-			dao.DelHotPostsCacheAsync()
 
 			OK(c, gin.H{
 				"post_id":    postID,
 				"liked":      liked,
-				"like_count": count,
+				"like_count": likeCount,
 			})
 
 		})
@@ -199,25 +135,17 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 
 		//cursor: last post_id from previous page
 		cursorStr := c.Query("cursor")
-
-		var posts []model.Post
-		query := db.Order("id DESC").Limit(limit)
-
+		var cursor uint64
 		if cursorStr != "" {
-			if cursor, err := strconv.ParseUint(cursorStr, 10, 64); err == nil && cursor > 0 {
-				query = query.Where("id < ?", cursor)
+			if cVal, err := strconv.ParseUint(cursorStr, 10, 64); err == nil && cVal > 0 {
+				cursor = cVal
 			}
 		}
 
-		if err := query.Find(&posts).Error; err != nil {
+		posts, nextCursor, err := svc.ListPublicPosts(limit, cursor)
+		if err != nil {
 			Fail(c, 5002, "db error")
 			return
-		}
-
-		//cursor: last id from current page
-		var nextCursor uint
-		if len(posts) > 0 {
-			nextCursor = posts[len(posts)-1].ID
 		}
 
 		OK(c, gin.H{
@@ -247,45 +175,19 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 		if err != nil || limit < 0 || limit > 100 {
 			limit = 10
 		}
+
 		cursorStr := c.Query("cursor") //last post_id from previous page
-
-		//check who I follow
-		var rels []model.Follow
-		if err := db.Where("user_id = ?", userID).Find(&rels).Error; err != nil {
-			Fail(c, 3043, "db error")
-			return
-		}
-		if len(rels) == 0 {
-			OK(c, gin.H{
-				"list":        []model.Post{},
-				"next_cursor": 0,
-			})
-			return
-		}
-
-		//
-		ids := make([]uint, 0, len(rels)+1)
-		for _, r := range rels {
-			ids = append(ids, r.FollowID)
-		}
-
-		//query their posts from 'post' table(id DES + cursor-based pagination)
-		var posts []model.Post
-		query := db.Where("user_id IN ?", ids).Order("id DESC").Limit(limit)
+		var cursor uint64
 		if cursorStr != "" {
-			if cursor, err := strconv.ParseUint(cursorStr, 10, 64); err == nil && cursor > 0 {
-				query = query.Where("id < ?", cursor)
+			if cVal, err := strconv.ParseUint(cursorStr, 10, 64); err == nil && cVal > 0 {
+				cursor = cVal
 			}
 		}
-		if err := query.Find(&posts).Error; err != nil {
+
+		posts, nextCursor, err := svc.ListFollowFeed(userID, limit, cursor)
+		if err != nil {
 			Fail(c, 3044, "db error")
 			return
-		}
-
-		//calculate next page cursor (the last id from current page)
-		var nextCursor uint
-		if len(posts) > 0 {
-			nextCursor = posts[len(posts)-1].ID
 		}
 
 		OK(c, gin.H{
@@ -316,84 +218,17 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 		if err != nil || limit <= 0 || limit > 100 {
 			limit = 100
 		}
-		cursorStr := c.Query("cursor")
+		cursor := c.Query("cursor")
 
-		ctx := context.Background()
-		inboxKey := fmt.Sprintf("inbox:%d", userID)
-
-		//determine max score for ZSet range query
-		max := "+inf"
-		if cursorStr != "" {
-			max = "(" + cursorStr
-		}
-
-		//read one page of post_ids from Redis inbox (sorted by score descending)
-		zs, err := config.Rdb.ZRevRangeByScoreWithScores(ctx, inboxKey, &redis.ZRangeBy{
-			Max:    max,
-			Min:    "0",
-			Offset: 0,
-			Count:  int64(limit),
-		}).Result()
+		posts, nextCursor, err := svc.ListInboxFeed(userID, limit, cursor)
 		if err != nil {
-			Fail(c, 3053, "redis error")
+			Fail(c, 3053, "db or cache error")
 			return
-		}
-		if len(zs) == 0 {
-			OK(c, gin.H{
-				"list":        []model.Post{},
-				"next_cursor": "",
-			})
-			return
-		}
-
-		//extract post IDs and their scores (timestamps)
-		ids := make([]uint, 0, len(zs))
-		scores := make([]float64, 0, len(zs))
-		for _, z := range zs {
-			idStr := fmt.Sprint(z.Member)
-			id64, err := strconv.ParseUint(idStr, 10, 64)
-			if err != nil || id64 == 0 {
-				continue
-			}
-			ids = append(ids, uint(id64))
-			scores = append(scores, z.Score)
-		}
-		if len(ids) == 0 {
-			OK(c, gin.H{
-				"list":        []model.Post{},
-				"next_cursor": "",
-			})
-			return
-		}
-
-		//fetch post details from MySQL in bulk using IN query
-		var posts []model.Post
-		if err := db.Where("id IN ?", ids).Find(&posts).Error; err != nil {
-			Fail(c, 3054, "db error")
-			return
-		}
-
-		//Reorder posts according to Redis ZSet ordering
-		m := make(map[uint]model.Post, len(posts))
-		for _, p := range posts {
-			m[p.ID] = p
-		}
-		ordered := make([]model.Post, 0, len(ids))
-		for _, id := range ids {
-			if p, ok := m[id]; ok {
-				ordered = append(ordered, p)
-			}
-		}
-
-		//set next_cursor as the timestamp of last item in this page
-		nextCursor := ""
-		if len(scores) > 0 {
-			nextCursor = fmt.Sprintf("%.0f", scores[len(scores)-1])
 		}
 
 		//return feed list + next cursor
 		OK(c, gin.H{
-			"list":        ordered,
+			"list":        posts,
 			"next_cursor": nextCursor,
 		})
 
@@ -408,7 +243,7 @@ func PostRoutes(r *gin.Engine, db *gorm.DB) {
 			limit = 10
 		}
 
-		posts, err := dao.GetHotPosts(db, limit)
+		posts, err := svc.ListHotPosts(limit)
 		if err != nil {
 			Fail(c, 5003, "db or cache error")
 			return
