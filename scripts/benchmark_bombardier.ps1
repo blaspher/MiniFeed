@@ -47,7 +47,7 @@ function Get-Token {
 }
 
 # 预热缓存函数
-function Warmup-Cache {
+function Initialize-CacheWarmup {
     param($token)
     
     Write-Host "`n[2/3] 预热热门接口缓存..." -ForegroundColor Yellow
@@ -98,7 +98,7 @@ if (-not $TOKEN) {
 }
 
 # 预热缓存
-Warmup-Cache -token $TOKEN
+Initialize-CacheWarmup -token $TOKEN
 
 # 执行性能测试
 Write-Host "`n[3/3] 开始性能测试..." -ForegroundColor Yellow

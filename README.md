@@ -34,15 +34,19 @@ MiniFeed 是一个仿微博/小红书/抖音底层能力的 Feed 流系统，基
 
 🔥 6. 如何运行  
 1) 准备环境：Docker、Docker Compose、Go 1.22+（本机调试用）。  
-2) 配置环境变量（示例，不要提交真实密码）：  
+2) 配置环境变量（示例）：  
    - `MYSQL_DSN=user:pass@tcp(mysql:3306)/demo?charset=utf8mb4&parseTime=True&loc=Local`  
    - `REDIS_ADDR=redis:6379`  
    - `JWT_SECRET=your-jwt-secret`  
 3) 启动（推荐容器化）：  
-   ```bash
-   docker-compose up -d --build
-   docker-compose ps
-   ```  
+   - 一键脚本：  
+     - Windows: `.\scripts\start.ps1`  
+     - Linux/macOS: `bash scripts/start.sh`  
+   - 或直接执行：  
+     ```bash
+     docker-compose up -d --build
+     docker-compose ps
+     ```  
    访问接口 `http://localhost:8888`，测试页面 `http://localhost:8888/test.html`，监控 `http://localhost:8888/metrics`。  
 4) 本地直跑（需自备 MySQL/Redis）：  
    ```bash
@@ -55,4 +59,3 @@ MiniFeed 是一个仿微博/小红书/抖音底层能力的 Feed 流系统，基
 - Feed 流 Push / Pull 优劣？Push 写重读轻，适合关注少的用户；Pull 写轻读重，适合关注多的用户；可结合用户分层选择。  
 - MySQL 分页为何用 cursor？避免 `LIMIT offset` 的深翻页性能问题，利用索引顺序和上次游标实现高效分页。  
 - 热点动态重复查询如何解决？热门榜单缓存（定时刷新）、双删策略、Bloom Filter 防穿透、TTL 抖动防雪崩、互斥锁防击穿。
-
