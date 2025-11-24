@@ -1,0 +1,52 @@
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: demo
+      MYSQL_USER: linjiayi
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - mini-feed-network
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    networks:
+      - mini-feed-network
+
+  app:
+    build:
+      context: . 
+      dockerfile: docker/Dockerfile  
+    ports:
+      - "8888:8888"
+    environment:
+      - MYSQL_DSN=linjiayi:${MYSQL_PASSWORD}@tcp(mysql:3306)/demo?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_ADDR=redis:6379
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - mini-feed-network
+
+networks:
+  mini-feed-network:
+    driver: bridge
+
+volumes:
+  mysql-data:

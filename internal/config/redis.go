@@ -9,9 +9,9 @@ import (
 
 var Rdb *redis.Client
 
-func InitRedis() *redis.Client {
+func InitRedis(addr string) *redis.Client {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "127.0.0.1:6379",
+		Addr:     addr,
 		Password: "",
 		DB:       0,
 	})

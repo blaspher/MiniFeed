@@ -10,8 +10,7 @@ import (
 	"minifeed/internal/model"
 )
 
-func InitDB() *gorm.DB {
-	dsn := "root:@LJYmm20040208@tcp(127.0.0.1:3306)/demo?charset=utf8mb4&parseTime=True&loc=Local"
+func InitDB(dsn string) *gorm.DB {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})

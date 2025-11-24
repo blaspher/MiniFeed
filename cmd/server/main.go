@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"minifeed/internal/api"
 	"minifeed/internal/config"
@@ -16,8 +17,17 @@ import (
 )
 
 func main() {
-	db := config.InitDB()
-	rdb := config.InitRedis()
+
+	mysqlDSN := os.Getenv("MYSQL_DSN")
+	redisAddr := os.Getenv("REDIS_ADDR")
+	jwtSecret := os.Getenv("JWT_SECRET")
+
+	if mysqlDSN == "" || redisAddr == "" || jwtSecret == "" {
+		log.Fatal("Missing required environment variables")
+	}
+
+	db := config.InitDB(mysqlDSN)
+	rdb := config.InitRedis(redisAddr)
 
 	if err := dao.InitPostBloom(db, 10000); err != nil {
 		log.Printf("[warn] init post bloom failed: %v\n", err)
