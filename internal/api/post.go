@@ -11,33 +11,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// push the newly created post into each follower's index
-/*func pushPostInbox(post model.Post, db *gorm.DB) {
-	ctx := context.Background()
-	//query all followers
-	var rels []model.Follow
-	if err := db.Where("follow_id = ?", post.UserID).Find(&rels).Error; err != nil {
-		return
-	}
-	//collect all user IDs who should receive this post: all followers + the author himself
-	userIDs := make([]uint, 0, len(rels)+1)
-	userIDs = append(userIDs, post.UserID)
-	for _, r := range rels {
-		userIDs = append(userIDs, r.UserID)
-	}
-	//use post creation timestamp as score for sorting in the ZSet
-	score := float64(post.CreatedAt.Unix())
-	//push the post into each user's inbox in Redis
-	for _, uid := range userIDs {
-		key := fmt.Sprintf("inbox:%d", uid)
-		_ = config.Rdb.ZAdd(ctx, key, redis.Z{
-			Score:  score,
-			Member: post.ID,
-		}).Err()
-	}
-
-}*/
-
 func PostRoutes(r *gin.Engine, svc *service.PostService) {
 	//=============privacy:post a status update, need to login================
 	authGroup := r.Group("/api", middleware.Auth())
